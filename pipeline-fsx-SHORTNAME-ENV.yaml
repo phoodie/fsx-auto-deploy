@@ -1,0 +1,177 @@
+# Details of the request below:
+# <STORY ID> -  <STORY TITLE>
+# version - 2.1
+
+trigger:
+- none
+
+pool:
+  name: vmss-agent-ubuntu
+
+variables:
+  #Mandatory Cloud business tags
+  #Manually change these 
+  service-form: '' #Max 8 chars
+  support-group-form: '' 
+  cost-centre-form: '' 
+  environment-form: '' 
+  business-criticality-form: ''
+  description-form: '' # naming convention <SHORTNAME>-<ENV>-FSx
+  created-by-form: '' #this should be the infra member executing this
+  backup-form: ''
+
+  #FSx for Windows Detail variables
+  #Manually change these
+  short-name-form: '' #Max 8 chars
+  aws-account-form: '' 
+  storagetype-form: '' #Allowed value `SSD` or `HDD` (HDD is not supported for `SINGLE_AZ_1`)
+  storage-capacity-form: '' #Allowed value minimum `32` GB
+  throughput-capacity-form: '' #Allowed minimum value `32` MB/s
+  deployment-type-form: '' #Allowed value `SINGLE_AZ_1`, `MULTI_AZ_1`, `SINGLE_AZ_2`
+  subnet-form: '' #Existing subnetid of where FSx should be deployed. This will also be treated as "Preferred Subnet" for MULTI_AZ_1 
+  ${{ if eq(variables['deployment-type-form'], 'MULTI_AZ_1') }}: 
+    standby-subnet-form: '' #**REQUIRED** if deployment-type-form is `MULTI_AZ_1`, where this `standby-subnet-form` should be different from `subnet-form`. Else leave this as empty using ''
+  vpcid: '' #Provided by the requester of an existing vpc id to use 
+  fsxkey: '' # ARN of KMS FSx Key
+
+  #Manually change these
+  fsxfileadmingroup: '' #Delegated administrator group to manage FSx file/folder access control list 
+  securitygroupid: '' #input securitygroupid for fsx to permit access
+
+  #Variables for cloudformation stack
+  region: 'ap-southeast-2'
+  templatesource: 'file'
+  stackname: fsx-$(short-name-form)-$(environment-form)
+  fsxname: fsx-$(short-name-form)-$(environment-form) #Name for fsx share
+  #Manually change this
+  templatefile: '' #Update with the path to the fsx template file
+
+  #if deployment is SINGLE_AZ_1 or SINGLE_AZ_2, then stand-by-subnet must be empty
+  ${{ if or(eq(variables['deployment-type-form'], 'SINGLE_AZ_1'), eq(variables['deployment-type-form'], 'SINGLE_AZ_2')) }}:
+    standby-subnet-form: ''
+  ${{ if eq(variables['deployment-type-form'], 'MULTI_AZ_1') }}:
+    preferred-subnet-id: $(subnet-form)
+
+stages:
+- stage: ValidatingTemplate
+  dependsOn: []
+  jobs:
+  - job: build_awscli
+    dependsOn: []
+    displayName: "Building AWS CLI" 
+    steps:
+    - task: Bash@3
+      inputs:
+        targetType: "inline"
+        script: |
+          if ! command -v aws &> /dev/null
+          then
+            echo "[INFO] AWS CLI not detected. Installing AWS CLI"
+            sudo apt install curl zip -y
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+            aws --version
+          else
+            echo "[PASS] AWS CLI detected"
+          fi
+
+  - job: validate_template
+    dependsOn: build_awscli
+    displayName: 'Validating Cloudformation Template'
+    steps:
+      - task: AWSShellScript@1
+        inputs:
+          awsCredentials: '$(aws-account-form)'
+          regionName: '$(region)'
+          scriptType: 'inline'
+          inlineScript: |
+            aws --version
+            aws cloudformation validate-template --template-body file://$(System.DefaultWorkingDirectory)/$(templatefile)
+
+- stage: CloudFormationStack
+  dependsOn: ValidatingTemplate
+  variables: 
+    tags: |
+      service=$(service-form)
+      support-group=$(support-group-form)
+      cost-centre=$(cost-centre-form) 
+      environment=$(environment-form)
+      business-criticality=$(business-criticality-form)
+      created-by=$(created-by-form)
+      description=$(description-form)
+      backup=$(backup-form)
+      release-pipeline=pipeline-fsx-$(short-name-form)-$(environment-form)
+  jobs:
+  - job: cloudformation_stack
+    displayName: CloudFormation
+    steps:
+    - task: CloudFormationCreateOrUpdateStack@1
+      inputs:
+        awsCredentials: '$(aws-account-form)'
+        regionName: '$(region)'
+        stackName: '$(stackname)'
+        templateSource: $(templatesource)
+        templateFile: '$(templatefile)'
+        templateParametersSource: inline
+        templateParameters: |
+          [   
+            {
+              "ParameterKey": "VpcId",
+              "ParameterValue": "$(vpcid)"
+            },
+            {
+              "ParameterKey": "SecurityGroupId",
+              "ParameterValue": "$(securitygroupid)"
+            },
+            {
+              "ParameterKey": "TagFSxName",
+              "ParameterValue": "$(fsxname)"
+            },
+            {
+              "ParameterKey": "ThroughputCapacityMB",
+              "ParameterValue": "$(throughput-capacity-form)"
+            },
+            {
+              "ParameterKey": "Subnet",
+              "ParameterValue": "$(subnet-form)"
+            },
+            {
+              "ParameterKey": "StandbySubnet",
+              "ParameterValue": "$(standby-subnet-form)"
+            },
+            {
+              "ParameterKey": "PreferredSubnetId",
+              "ParameterValue": "$(preferred-subnet-id)"
+            },
+            {
+              "ParameterKey": "StorageTypes",
+              "ParameterValue": "$(storagetype-form)"
+            },
+            {
+              "ParameterKey": "StorageCapacityGB",
+              "ParameterValue": "$(storage-capacity-form)"
+            },
+            {
+              "ParameterKey": "DeploymentTypeAZ",
+              "ParameterValue": "$(deployment-type-form)"
+            },
+            {
+              "ParameterKey": "FsxPassword",
+              "ParameterValue": "$(fsxpassword)"
+            },    
+            {
+              "ParameterKey": "FsxUser",
+              "ParameterValue": "$(fsxusername)"
+            },
+            {
+              "ParameterKey": "FsxFileAdminGroup",
+              "ParameterValue": "$(fsxfileadmingroup)"
+            }, 
+            {
+              "ParameterKey": "FsxKmsKey",
+              "ParameterValue": "$(fsxkey)"
+            }   
+          ]
+        warnWhenNoWorkNeeded: false
+        tags: $(tags)
