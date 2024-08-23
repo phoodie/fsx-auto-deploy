@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: FSx - Deployment Script Template
+
+# version - 2.1
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: ID of the VPC to deploy to
+
+  SecurityGroupId:
+    Type: String
+    Description: ID of an existing security group if any, else leave empty and dedicated security group will be created for fsx
+
+##Paramters below are for Fsx
+  TagFSxName:
+    Type: String
+    Description: File system name for this FSx
+
+  ThroughputCapacityMB:
+    Type: Number
+    Default: 32
+    MinValue: 32
+    Description: Throughput capacity for FSx file system in MB/s
+
+  Subnet:
+    Type: String
+    Description: Select a subnet inside your VPC
+
+  StandbySubnet:
+    Type: String
+    Description: Select a subnet inside your VPC different from Subnet
+
+  PreferredSubnetId:
+    Type: String
+    Description: Required when DeploymentType is set to MULTI_AZ_1. This should be the same as Subnet
+
+#NOTE HDD is not supported for deploymenttypeAZ Single_AZ_1
+  StorageTypes:
+    Type: String
+    Default: SSD
+    AllowedValues:
+      - SSD
+      - HDD
+
+  StorageCapacityGB:
+    Type: Number
+    MinValue: 32
+    ConstraintDescription: Minimum 32 GiB; Maximum 65,536 GiB
+    Description: Minimum 32 GiB; Maximum 65,536 GiB
+
+  DeploymentTypeAZ:
+    Type: String
+    AllowedValues:
+      - SINGLE_AZ_1
+      - MULTI_AZ_1
+      - SINGLE_AZ_2
+
+  FsxPassword:
+    Type: String
+    NoEcho: true
+
+  FsxUser:
+    Type: String
+
+  FsxFileAdminGroup:
+    Type: String
+    Description: Delegated administrators group to manage FSx file/folder access control list 
+
+  FsxKmsKey:
+    Type: String
+    Description: Input full ARN of the KMS key for Fsx
+
+Conditions:
+  IsSingleAz1:
+    !Equals [!Ref DeploymentTypeAZ, "SINGLE_AZ_1"]
+  IsMultiAz1:
+    !Equals [!Ref DeploymentTypeAZ, "MULTI_AZ_1"]
+
+Resources:
+  FsxForWindowsSelfManagedADFileSystem:
+    Type: "AWS::FSx::FileSystem"
+    Properties:
+      FileSystemType: WINDOWS
+      KmsKeyId: !Ref FsxKmsKey
+      SecurityGroupIds: 
+        - !Ref SecurityGroupId
+      StorageCapacity:
+        !Ref StorageCapacityGB
+      StorageType:
+        !If [IsSingleAz1, 'SSD', !Ref StorageTypes] 
+      SubnetIds: 
+        - !Ref Subnet
+        - !If [IsMultiAz1, !Ref StandbySubnet, !Ref AWS::NoValue] #only applicable for MULTI_AZ_1 where the second subnet will be treated as stanbysubnet
+      Tags:
+        - Key: Name
+          Value: !Ref TagFSxName
+      WindowsConfiguration:
+        AutomaticBackupRetentionDays: 0 
+        DeploymentType: !Ref DeploymentTypeAZ
+        PreferredSubnetId: !If [IsMultiAz1, !Ref Subnet, !Ref AWS::NoValue] #This is required when DeploymentType=MULTI_AZ where Subnet will be assigned
+        ThroughputCapacity: !Ref ThroughputCapacityMB
+        SelfManagedActiveDirectoryConfiguration:
+          DnsIps: 
+            -  # AD DNS Server
+            -  # AD DNS Server
+          DomainName: "arcbs.redcross.org.au"
+          FileSystemAdministratorsGroup: !Ref FsxFileAdminGroup #'fsx-demo-02-file-server-admin' 
+          OrganizationalUnitDistinguishedName: "OU=AWSFSx,OU=Servers,DC=arcbs,DC=redcross,DC=org,DC=au"
+          Password: !Ref FsxPassword
+          UserName: !Ref FsxUser
+
+Outputs:
+  FileSystemId:
+    Description: The ID of the file system.
+    Value: !Ref FsxForWindowsSelfManagedADFileSystem
+  DNSName:
+    Description: The DNS name of this FSx file system.
+    Value: !GetAtt FsxForWindowsSelfManagedADFileSystem.DNSName
+  SecurityGroupId: 
+    Description: The ID of the Security group used for FSx.
+    Value: !Ref SecurityGroupId
+
